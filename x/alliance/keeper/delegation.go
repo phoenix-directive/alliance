@@ -681,6 +681,29 @@ func (k Keeper) GetAllianceBondedAmount(ctx context.Context, delegator sdk.AccAd
 	return bonded.TruncateInt(), nil
 }
 
+// GetAllianceBondedAmount returns the total amount of bonded native tokens that are not in the
+// unbonding pool
+func (k Keeper) GetAllianceMintedAmount(ctx context.Context, delegator sdk.AccAddress) (math.Int, error) {
+	bonded := math.LegacyZeroDec()
+	err := k.stakingKeeper.IterateDelegatorDelegations(ctx, delegator, func(delegation stakingtypes.Delegation) bool {
+		validatorAddr, err := sdk.ValAddressFromBech32(delegation.ValidatorAddress)
+		if err != nil {
+			panic(err) // shouldn't happen
+		}
+		validator, err := k.stakingKeeper.GetValidator(ctx, validatorAddr)
+		if err == nil {
+			shares := delegation.Shares
+			tokens := validator.TokensFromSharesTruncated(shares)
+			bonded = bonded.Add(tokens)
+		}
+		return false
+	})
+	if err != nil {
+		return math.Int{}, err
+	}
+	return bonded.TruncateInt(), nil
+}
+
 // ResetAssetAndValidators
 // When an asset has no more tokens being delegated, go through all validators and set
 // validator shares to zero

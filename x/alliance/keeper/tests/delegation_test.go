@@ -1080,7 +1080,8 @@ func TestDelegationWithNativeStakingChanges(t *testing.T) {
 	// Check total bonded tokens
 	totalBonded, err = app.StakingKeeper.TotalBondedTokens(ctx)
 	require.NoError(t, err)
-	require.Equal(t, math.NewInt(26_000_000), totalBonded)
+	// If native staking is changed, it should not affect alliance staking amount
+	require.Equal(t, math.NewInt(39_000_000-1_000_000), totalBonded)
 }
 
 func TestUndelegatingLargeNumbers(t *testing.T) {

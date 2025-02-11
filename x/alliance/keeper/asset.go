@@ -112,7 +112,7 @@ func (k Keeper) RebalanceHook(ctx context.Context, assets []*types.AllianceAsset
 func (k Keeper) RebalanceBondTokenWeights(ctx context.Context, assets []*types.AllianceAsset) (err error) {
 	sdkCtx := sdk.UnwrapSDKContext(ctx)
 	moduleAddr := k.accountKeeper.GetModuleAddress(types.ModuleName)
-	allianceBondAmount, err := k.GetAllianceBondedAmount(ctx, moduleAddr)
+	allianceMintedAmount, err := k.GetAllianceMintedAmount(ctx, moduleAddr)
 	if err != nil {
 		return err
 	}
@@ -121,15 +121,18 @@ func (k Keeper) RebalanceBondTokenWeights(ctx context.Context, assets []*types.A
 	if err != nil {
 		return err
 	}
-	nativeBondAmount := totalBonded.Sub(allianceBondAmount)
 	bondDenom, err := k.stakingKeeper.BondDenom(ctx)
 	if err != nil {
 		return err
 	}
+	totalUnbonded := k.bankKeeper.GetBalance(ctx, k.stakingKeeper.GetNotBondedPool(ctx).GetAddress(), bondDenom)
+	nativeBondAmount := totalBonded.Add(totalUnbonded.Amount).Sub(allianceMintedAmount)
 
+	unbondedValidatorShares := sdk.NewDecCoins()
 	var validators []types.AllianceValidator
 
-	// Iterate through all alliance validators
+	// Iterate through all alliance validators to remove those that are unbonded.
+	// Unbonded validators will have all delegations removed
 	err = k.IterateAllianceValidatorInfo(ctx, func(valAddr sdk.ValAddress, info types.AllianceValidatorInfo) bool {
 		var validator types.AllianceValidator
 		validator, err = k.GetAllianceValidator(ctx, valAddr)
@@ -137,6 +140,9 @@ func (k Keeper) RebalanceBondTokenWeights(ctx context.Context, assets []*types.A
 			return true
 		}
 		validators = append(validators, validator)
+		if !validator.IsBonded() {
+			unbondedValidatorShares = unbondedValidatorShares.Add(validator.ValidatorShares...)
+		}
 		return false
 	})
 	if err != nil {
@@ -153,6 +159,7 @@ func (k Keeper) RebalanceBondTokenWeights(ctx context.Context, assets []*types.A
 		if err == nil {
 			currentBondedAmount = validator.TokensFromShares(delegation.GetShares())
 		}
+
 		expectedBondAmount := cmath.LegacyZeroDec()
 		for _, asset := range assets {
 			// Ignores assets that were recently added to prevent a small set of stakers from owning too much of the
@@ -167,8 +174,9 @@ func (k Keeper) RebalanceBondTokenWeights(ctx context.Context, assets []*types.A
 			valShares := validator.ValidatorSharesWithDenom(asset.Denom)
 			expectedBondAmountForAsset := asset.RewardWeight.MulInt(nativeBondAmount)
 
-			if valShares.IsPositive() && asset.TotalValidatorShares.IsPositive() {
-				expectedBondAmount = expectedBondAmount.Add(valShares.Quo(asset.TotalValidatorShares).Mul(expectedBondAmountForAsset))
+			bondedValidatorShares := asset.TotalValidatorShares
+			if valShares.IsPositive() && bondedValidatorShares.IsPositive() {
+				expectedBondAmount = expectedBondAmount.Add(valShares.Quo(bondedValidatorShares).Mul(expectedBondAmountForAsset))
 			}
 		}
 		if expectedBondAmount.GT(currentBondedAmount) {
