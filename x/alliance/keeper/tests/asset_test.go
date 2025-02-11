@@ -287,7 +287,8 @@ func TestRebalancingWithUnbondedValidator(t *testing.T) {
 	require.NoError(t, err)
 	totalBonded, err = app.StakingKeeper.TotalBondedTokens(ctx)
 	require.NoError(t, err)
-	require.Equal(t, math.NewInt(16_000_000), totalBonded)
+	// should still be the same as before since unbonded validators should not be affected by rebalancing
+	require.Equal(t, math.NewInt(13_100_000), totalBonded)
 
 	_, err = app.AllianceKeeper.GetAllianceValidator(ctx, valAddr2)
 	require.NoError(t, err)
@@ -302,7 +303,7 @@ func TestRebalancingWithUnbondedValidator(t *testing.T) {
 	require.NoError(t, err)
 	totalBonded, err = app.StakingKeeper.TotalBondedTokens(ctx)
 	require.NoError(t, err)
-	require.Equal(t, math.NewInt(18_900_000), totalBonded)
+	require.Equal(t, math.NewInt(16_000_000), totalBonded)
 
 	assets = app.AllianceKeeper.GetAllAssets(ctx)
 	err = app.AllianceKeeper.RebalanceBondTokenWeights(ctx, assets)
@@ -310,6 +311,174 @@ func TestRebalancingWithUnbondedValidator(t *testing.T) {
 	totalBonded, err = app.StakingKeeper.TotalBondedTokens(ctx)
 	require.NoError(t, err)
 	require.Equal(t, math.NewInt(16_000_000), totalBonded)
+
+	_, stop := alliance.RunAllInvariants(ctx, app.AllianceKeeper)
+	require.False(t, stop)
+}
+
+func TestRebalancingAfterChangesToUnbondedValidator(t *testing.T) {
+	var err error
+	app, ctx := createTestContext(t)
+	bondDenom, err := app.StakingKeeper.BondDenom(ctx)
+	require.NoError(t, err)
+	startTime := time.Now()
+	ctx = ctx.WithBlockTime(startTime).WithBlockHeight(1)
+	app.AllianceKeeper.InitGenesis(ctx, &types.GenesisState{
+		Params: types.DefaultParams(),
+		Assets: []types.AllianceAsset{
+			{
+				Denom:        AllianceDenom,
+				RewardWeight: math.LegacyMustNewDecFromStr("0.1"),
+				TakeRate:     math.LegacyNewDec(0),
+				TotalTokens:  math.ZeroInt(),
+			},
+			{
+				Denom:        AllianceDenomTwo,
+				RewardWeight: math.LegacyMustNewDecFromStr("0.5"),
+				TakeRate:     math.LegacyNewDec(0),
+				TotalTokens:  math.ZeroInt(),
+			},
+		},
+	})
+
+	// Set tax and rewards to be zero for easier calculation
+	distParams, err := app.DistrKeeper.Params.Get(ctx)
+	require.NoError(t, err)
+	distParams.CommunityTax = math.LegacyZeroDec()
+	err = app.DistrKeeper.Params.Set(ctx, distParams)
+	require.NoError(t, err)
+
+	// Accounts
+	addrs := test_helpers.AddTestAddrsIncremental(app, ctx, 5, sdk.NewCoins(
+		sdk.NewCoin(bondDenom, math.NewInt(10_000_000)),
+		sdk.NewCoin(AllianceDenom, math.NewInt(50_000_000)),
+		sdk.NewCoin(AllianceDenomTwo, math.NewInt(50_000_000)),
+	))
+	pks := test_helpers.CreateTestPubKeys(2)
+
+	// Increase the stake on genesis validator
+	delegations, err := app.StakingKeeper.GetAllDelegations(ctx)
+	require.NoError(t, err)
+	require.Len(t, delegations, 1)
+	valAddr0, err := sdk.ValAddressFromBech32(delegations[0].ValidatorAddress)
+	require.NoError(t, err)
+	val0, _ := app.StakingKeeper.GetValidator(ctx, valAddr0)
+	_, err = app.StakingKeeper.Delegate(ctx, addrs[4], math.NewInt(9_000_000), stakingtypes.Unbonded, val0, true)
+	require.NoError(t, err)
+
+	// Creating two validators: 1 with 0% commission, 1 with 100% commission
+	valAddr1 := sdk.ValAddress(addrs[0])
+	_val1 := teststaking.NewValidator(t, valAddr1, pks[0])
+	_val1.Commission = stakingtypes.Commission{
+		CommissionRates: stakingtypes.CommissionRates{
+			Rate:          math.LegacyNewDec(0),
+			MaxRate:       math.LegacyNewDec(0),
+			MaxChangeRate: math.LegacyNewDec(0),
+		},
+		UpdateTime: time.Now(),
+	}
+	_val1.Description.Moniker = "val1" //nolint:goconst
+	test_helpers.RegisterNewValidator(t, app, ctx, _val1)
+	val1, err := app.AllianceKeeper.GetAllianceValidator(ctx, valAddr1)
+	require.NoError(t, err)
+
+	valAddr2 := sdk.ValAddress(addrs[1])
+	_val2 := teststaking.NewValidator(t, valAddr2, pks[1])
+	_val2.Commission = stakingtypes.Commission{
+		CommissionRates: stakingtypes.CommissionRates{
+			Rate:          math.LegacyNewDec(1),
+			MaxRate:       math.LegacyNewDec(1),
+			MaxChangeRate: math.LegacyNewDec(0),
+		},
+		UpdateTime: time.Now(),
+	}
+	_val2.Description.Moniker = "val2" //nolint:goconst
+	test_helpers.RegisterNewValidator(t, app, ctx, _val2)
+	val2, err := app.AllianceKeeper.GetAllianceValidator(ctx, valAddr2)
+	require.NoError(t, err)
+
+	user1 := addrs[2]
+	user2 := addrs[3]
+
+	// Users add delegations
+	_, err = app.AllianceKeeper.Delegate(ctx, user1, val1, sdk.NewCoin(AllianceDenom, math.NewInt(20_000_000)))
+	require.NoError(t, err)
+	_, err = app.AllianceKeeper.Delegate(ctx, user1, val2, sdk.NewCoin(AllianceDenom, math.NewInt(10_000_000)))
+	require.NoError(t, err)
+	_, err = app.AllianceKeeper.Delegate(ctx, user2, val1, sdk.NewCoin(AllianceDenom, math.NewInt(10_000_000)))
+	require.NoError(t, err)
+	_, err = app.AllianceKeeper.Delegate(ctx, user2, val2, sdk.NewCoin(AllianceDenom, math.NewInt(10_000_000)))
+	require.NoError(t, err)
+
+	_, err = app.AllianceKeeper.Delegate(ctx, user1, val1, sdk.NewCoin(AllianceDenomTwo, math.NewInt(10_000_000)))
+	require.NoError(t, err)
+	_, err = app.AllianceKeeper.Delegate(ctx, user1, val2, sdk.NewCoin(AllianceDenomTwo, math.NewInt(10_000_000)))
+	require.NoError(t, err)
+	_, err = app.AllianceKeeper.Delegate(ctx, user2, val1, sdk.NewCoin(AllianceDenomTwo, math.NewInt(10_000_000)))
+	require.NoError(t, err)
+	_, err = app.AllianceKeeper.Delegate(ctx, user2, val2, sdk.NewCoin(AllianceDenomTwo, math.NewInt(10_000_000)))
+	require.NoError(t, err)
+	require.NoError(t, err)
+
+	assets := app.AllianceKeeper.GetAllAssets(ctx)
+	err = app.AllianceKeeper.RebalanceBondTokenWeights(ctx, assets)
+	require.NoError(t, err)
+	_, err = app.StakingKeeper.ApplyAndReturnValidatorSetUpdates(ctx)
+	require.NoError(t, err)
+	totalBonded, err := app.StakingKeeper.TotalBondedTokens(ctx)
+	require.NoError(t, err)
+	require.Equal(t, math.NewInt(16_000_000), totalBonded)
+
+	val1, _ = app.AllianceKeeper.GetAllianceValidator(ctx, valAddr1)
+	val2, _ = app.AllianceKeeper.GetAllianceValidator(ctx, valAddr2)
+	require.Greater(t, val1.Tokens.Int64(), val2.Tokens.Int64())
+
+	// Set max validators to be 2 to trigger unbonding
+	params, err := app.StakingKeeper.GetParams(ctx)
+	require.NoError(t, err)
+	params.MaxValidators = 2
+	err = app.StakingKeeper.SetParams(ctx, params)
+	require.NoError(t, err)
+	_, err = app.StakingKeeper.ApplyAndReturnValidatorSetUpdates(ctx)
+	require.NoError(t, err)
+	totalBonded, err = app.StakingKeeper.TotalBondedTokens(ctx)
+	require.NoError(t, err)
+	require.Equal(t, math.NewInt(13_100_000), totalBonded)
+
+	vals, err := app.StakingKeeper.GetBondedValidatorsByPower(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 2, len(vals))
+	require.Equal(t, "val1", vals[1].GetMoniker())
+
+	assets = app.AllianceKeeper.GetAllAssets(ctx)
+	err = app.AllianceKeeper.RebalanceBondTokenWeights(ctx, assets)
+	require.NoError(t, err)
+	totalBonded, err = app.StakingKeeper.TotalBondedTokens(ctx)
+	require.NoError(t, err)
+	// should still be the same as before since unbonded validators should not be affected by rebalancing
+	require.Equal(t, math.NewInt(13_100_000), totalBonded)
+
+	// Check that val2 is unbonded
+	val2, _ = app.AllianceKeeper.GetAllianceValidator(ctx, valAddr2)
+	require.False(t, val2.IsBonded())
+	// Undelegate all from val2
+	_, err = app.AllianceKeeper.Undelegate(ctx, user1, val2, sdk.NewCoin(AllianceDenom, math.NewInt(10_000_000)))
+	require.NoError(t, err)
+	_, err = app.AllianceKeeper.Undelegate(ctx, user2, val2, sdk.NewCoin(AllianceDenom, math.NewInt(10_000_000)))
+	require.NoError(t, err)
+	_, err = app.AllianceKeeper.Undelegate(ctx, user1, val2, sdk.NewCoin(AllianceDenomTwo, math.NewInt(10_000_000)))
+	require.NoError(t, err)
+	_, err = app.AllianceKeeper.Undelegate(ctx, user2, val2, sdk.NewCoin(AllianceDenomTwo, math.NewInt(10_000_000)))
+	require.NoError(t, err)
+	assets = app.AllianceKeeper.GetAllAssets(ctx)
+	err = app.AllianceKeeper.RebalanceBondTokenWeights(ctx, assets)
+	require.NoError(t, err)
+	require.Equal(t, math.NewInt(13_100_000), totalBonded)
+
+	allianceModuleAddr := app.AccountKeeper.GetModuleAddress(types.ModuleName)
+	val2, _ = app.AllianceKeeper.GetAllianceValidator(ctx, valAddr2)
+	_, err = app.StakingKeeper.GetDelegation(ctx, allianceModuleAddr, valAddr2)
+	require.Error(t, err, "no delegation")
 
 	_, stop := alliance.RunAllInvariants(ctx, app.AllianceKeeper)
 	require.False(t, stop)

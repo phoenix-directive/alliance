@@ -127,29 +127,23 @@ func (k Keeper) RebalanceBondTokenWeights(ctx context.Context, assets []*types.A
 		return err
 	}
 
-	unbondedValidatorShares := sdk.NewDecCoins()
-	var bondedValidators []types.AllianceValidator
+	var validators []types.AllianceValidator
 
-	// Iterate through all alliance validators to remove those that are unbonded.
-	// Unbonded validators will be ignored when rebalancing.
+	// Iterate through all alliance validators
 	err = k.IterateAllianceValidatorInfo(ctx, func(valAddr sdk.ValAddress, info types.AllianceValidatorInfo) bool {
 		var validator types.AllianceValidator
 		validator, err = k.GetAllianceValidator(ctx, valAddr)
 		if err != nil {
 			return true
 		}
-		if validator.IsBonded() {
-			bondedValidators = append(bondedValidators, validator)
-		} else {
-			unbondedValidatorShares = unbondedValidatorShares.Add(validator.ValidatorShares...)
-		}
+		validators = append(validators, validator)
 		return false
 	})
 	if err != nil {
 		return err
 	}
 
-	for _, validator := range bondedValidators {
+	for _, validator := range validators {
 		currentBondedAmount := cmath.LegacyZeroDec()
 		valAddr, err := validator.GetValAddress()
 		if err != nil {
@@ -159,7 +153,6 @@ func (k Keeper) RebalanceBondTokenWeights(ctx context.Context, assets []*types.A
 		if err == nil {
 			currentBondedAmount = validator.TokensFromShares(delegation.GetShares())
 		}
-
 		expectedBondAmount := cmath.LegacyZeroDec()
 		for _, asset := range assets {
 			// Ignores assets that were recently added to prevent a small set of stakers from owning too much of the
@@ -174,9 +167,8 @@ func (k Keeper) RebalanceBondTokenWeights(ctx context.Context, assets []*types.A
 			valShares := validator.ValidatorSharesWithDenom(asset.Denom)
 			expectedBondAmountForAsset := asset.RewardWeight.MulInt(nativeBondAmount)
 
-			bondedValidatorShares := asset.TotalValidatorShares.Sub(unbondedValidatorShares.AmountOf(asset.Denom))
-			if valShares.IsPositive() && bondedValidatorShares.IsPositive() {
-				expectedBondAmount = expectedBondAmount.Add(valShares.Quo(bondedValidatorShares).Mul(expectedBondAmountForAsset))
+			if valShares.IsPositive() && asset.TotalValidatorShares.IsPositive() {
+				expectedBondAmount = expectedBondAmount.Add(valShares.Quo(asset.TotalValidatorShares).Mul(expectedBondAmountForAsset))
 			}
 		}
 		if expectedBondAmount.GT(currentBondedAmount) {
