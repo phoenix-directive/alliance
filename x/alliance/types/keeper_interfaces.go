@@ -36,6 +36,7 @@ type StakingKeeper interface {
 	) (types.Validator, error)
 	IterateDelegatorDelegations(ctx context.Context, delegator sdk.AccAddress, cb func(delegation types.Delegation) (stop bool)) error
 	GetAllValidators(ctx context.Context) ([]types.Validator, error)
+	GetNotBondedPool(ctx context.Context) sdk.ModuleAccountI
 }
 
 type BankKeeper interface {
