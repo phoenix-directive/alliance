@@ -16,6 +16,7 @@ import (
 	"github.com/terra-money/alliance/x/alliance/keeper"
 	migrationsv4 "github.com/terra-money/alliance/x/alliance/migrations/v4"
 	migrationsv5 "github.com/terra-money/alliance/x/alliance/migrations/v5"
+	migrationsv6 "github.com/terra-money/alliance/x/alliance/migrations/v6"
 	"github.com/terra-money/alliance/x/alliance/types"
 
 	"cosmossdk.io/core/appmodule"
@@ -137,10 +138,14 @@ func (a AppModule) RegisterServices(cfg module.Configurator) {
 	if err != nil {
 		panic(fmt.Sprintf("failed to migrate x/alliance from version 4 to 5: %v", err))
 	}
+	err = cfg.RegisterMigration(types.ModuleName, 5, migrationsv6.Migrate(a.stakingKeeper, a.bankKeeper))
+	if err != nil {
+		panic(fmt.Sprintf("failed to migrate x/alliance from version 5 to 6: %v", err))
+	}
 }
 
 func (a AppModule) ConsensusVersion() uint64 {
-	return 5
+	return 6
 }
 
 func (a AppModule) GenerateGenesisState(simState *module.SimulationState) {
