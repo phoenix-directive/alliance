@@ -219,7 +219,11 @@ func (k Keeper) RebalanceBondTokenWeights(ctx context.Context, assets []*types.A
 			if err != nil {
 				return err
 			}
-			err = k.bankKeeper.BurnCoins(ctx, stakingtypes.BondedPoolName, sdk.NewCoins(sdk.NewCoin(bondDenom, tokensToBurn)))
+			pool := stakingtypes.NotBondedPoolName
+			if validator.IsBonded() {
+				pool = stakingtypes.BondedPoolName
+			}
+			err = k.bankKeeper.BurnCoins(ctx, pool, sdk.NewCoins(sdk.NewCoin(bondDenom, tokensToBurn)))
 			if err != nil {
 				return err
 			}

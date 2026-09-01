@@ -427,6 +427,7 @@ func TestRebalancingAfterChangesToUnbondedValidator(t *testing.T) {
 	totalBonded, err := app.StakingKeeper.TotalBondedTokens(ctx)
 	require.NoError(t, err)
 	require.Equal(t, math.NewInt(16_000_000), totalBonded)
+	requireBondedPoolMatchesBondedValidators(t, app, ctx)
 
 	val1, _ = app.AllianceKeeper.GetAllianceValidator(ctx, valAddr1)
 	val2, _ = app.AllianceKeeper.GetAllianceValidator(ctx, valAddr2)
@@ -443,6 +444,7 @@ func TestRebalancingAfterChangesToUnbondedValidator(t *testing.T) {
 	totalBonded, err = app.StakingKeeper.TotalBondedTokens(ctx)
 	require.NoError(t, err)
 	require.Equal(t, math.NewInt(13_100_000), totalBonded)
+	requireBondedPoolMatchesBondedValidators(t, app, ctx)
 
 	vals, err := app.StakingKeeper.GetBondedValidatorsByPower(ctx)
 	require.NoError(t, err)
@@ -456,10 +458,29 @@ func TestRebalancingAfterChangesToUnbondedValidator(t *testing.T) {
 	require.NoError(t, err)
 	// should still be the same as before since unbonded validators should not be affected by rebalancing
 	require.Equal(t, math.NewInt(13_100_000), totalBonded)
+	requireBondedPoolMatchesBondedValidators(t, app, ctx)
 
 	// Check that val2 is unbonded
 	val2, _ = app.AllianceKeeper.GetAllianceValidator(ctx, valAddr2)
 	require.False(t, val2.IsBonded())
+
+	// Dropping reward weights forces synthetic stake to be removed from all validators,
+	// including val2 which is no longer bonded. The burn must not come from the bonded pool.
+	asset, found := app.AllianceKeeper.GetAssetByDenom(ctx, AllianceDenom)
+	require.True(t, found)
+	asset.RewardWeight = math.LegacyMustNewDecFromStr("0.01")
+	require.NoError(t, app.AllianceKeeper.SetAsset(ctx, asset))
+
+	asset, found = app.AllianceKeeper.GetAssetByDenom(ctx, AllianceDenomTwo)
+	require.True(t, found)
+	asset.RewardWeight = math.LegacyMustNewDecFromStr("0.01")
+	require.NoError(t, app.AllianceKeeper.SetAsset(ctx, asset))
+
+	assets = app.AllianceKeeper.GetAllAssets(ctx)
+	err = app.AllianceKeeper.RebalanceBondTokenWeights(ctx, assets)
+	require.NoError(t, err)
+	requireBondedPoolMatchesBondedValidators(t, app, ctx)
+
 	// Undelegate all from val2
 	_, err = app.AllianceKeeper.Undelegate(ctx, user1, val2, sdk.NewCoin(AllianceDenom, math.NewInt(10_000_000)))
 	require.NoError(t, err)
@@ -472,7 +493,7 @@ func TestRebalancingAfterChangesToUnbondedValidator(t *testing.T) {
 	assets = app.AllianceKeeper.GetAllAssets(ctx)
 	err = app.AllianceKeeper.RebalanceBondTokenWeights(ctx, assets)
 	require.NoError(t, err)
-	require.Equal(t, math.NewInt(13_100_000), totalBonded)
+	requireBondedPoolMatchesBondedValidators(t, app, ctx)
 
 	allianceModuleAddr := app.AccountKeeper.GetModuleAddress(types.ModuleName)
 	val2, _ = app.AllianceKeeper.GetAllianceValidator(ctx, valAddr2)
@@ -481,6 +502,31 @@ func TestRebalancingAfterChangesToUnbondedValidator(t *testing.T) {
 
 	_, stop := alliance.RunAllInvariants(ctx, app.AllianceKeeper)
 	require.False(t, stop)
+}
+
+func requireBondedPoolMatchesBondedValidators(t *testing.T, app *test_helpers.App, ctx sdk.Context) {
+	t.Helper()
+
+	totalBonded, err := app.StakingKeeper.TotalBondedTokens(ctx)
+	require.NoError(t, err)
+
+	validators, err := app.StakingKeeper.GetAllValidators(ctx)
+	require.NoError(t, err)
+
+	bondedValidatorTokens := math.ZeroInt()
+	for _, validator := range validators {
+		if validator.IsBonded() {
+			bondedValidatorTokens = bondedValidatorTokens.Add(validator.Tokens)
+		}
+	}
+
+	require.Truef(
+		t,
+		bondedValidatorTokens.Equal(totalBonded),
+		"bonded pool balance %s does not match bonded validator tokens %s",
+		totalBonded.String(),
+		bondedValidatorTokens.String(),
+	)
 }
 
 func TestRebalancingWithJailedValidator(t *testing.T) {
